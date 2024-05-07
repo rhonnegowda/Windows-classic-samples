@@ -6,6 +6,7 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Reflection.Emit;
+using System.Runtime.InteropServices.WindowsRuntime;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -19,9 +20,9 @@ namespace PDETestApp
 {
     public partial class Form2 : Form
     {
-        UserDataProtectionManager g_udpm;
-        String g_selectedFolder = String.Empty;
-        String g_selectedFile = String.Empty;
+        UserDataProtectionManager dataProtectionManager;
+        String selectedFolder = String.Empty;
+        String selectedFile = String.Empty;
         public Form2()
         {
             InitializeComponent();
@@ -30,17 +31,18 @@ namespace PDETestApp
         // Loads the Windows Form to exercise PDE API and instantiates the UserDataProtectionManager object
         private void Form2_load(object sender, EventArgs e)
         {
-            g_udpm = UserDataProtectionManager.TryGetDefault();
-            if (g_udpm == null)
+            dataProtectionManager = UserDataProtectionManager.TryGetDefault();
+            if (dataProtectionManager == null)
             {
                 LogLine("Personal Data Encryption is not supported or enabled. Restart this app to check again.");
             }
             else
             {
                 LogLine("Personal Data Encryption is enabled.");
-                g_udpm.DataAvailabilityStateChanged += M_udpm_DataAvailabilityStateChanged;
-                LogCurrentDataAvailability();
-                LogLine("Listening to DataAvailabilityStateChanged event");
+                dataProtectionManager.DataAvailabilityStateChanged += (s, M_udpm_DataAvailabilityStateChanged) => {
+                    LogCurrentDataAvailability();
+                    LogLine("Listening to DataAvailabilityStateChanged event");
+                };
             }
         }
 
@@ -70,22 +72,29 @@ namespace PDETestApp
         // Logs the availability of the data being protected by PDE
         private void LogCurrentDataAvailability()
         {
-            bool l1Avl = g_udpm.IsContinuedDataAvailabilityExpected(UserDataAvailability.AfterFirstUnlock);
-            bool l2Avl = g_udpm.IsContinuedDataAvailabilityExpected(UserDataAvailability.WhileUnlocked);
+            bool l1Avl = dataProtectionManager.IsContinuedDataAvailabilityExpected(UserDataAvailability.AfterFirstUnlock);
+            bool l2Avl = dataProtectionManager.IsContinuedDataAvailabilityExpected(UserDataAvailability.WhileUnlocked);
             LogLine("IsContinuedDataAvailabilityExpected AfterFirstUnlock: " + l1Avl + ", WhileUnlocked: " + l2Avl);
         }
 
         // Protects the File or Folder specified as the item to the given availability levels
         async void ProtectAndLog(IStorageItem item, UserDataAvailability level)
         {
-            var protectResult = await g_udpm.ProtectStorageItemAsync(item, level);
-            if (protectResult == UserDataStorageItemProtectionStatus.Succeeded)
+            try
             {
-                LogLine("Protected " + item.Name + " to level " + level);
+                var protectResult = await dataProtectionManager.ProtectStorageItemAsync(item, level);
+                if (protectResult == UserDataStorageItemProtectionStatus.Succeeded)
+                {
+                    LogLine("Protected " + item.Name + " to level " + level);
+                }
+                else
+                {
+                    LogLine("Protection failed for " + item.Name + " to level " + level + ", status: " + protectResult);
+                }
             }
-            else
+            catch (NullReferenceException)
             {
-                LogLine("Protection failed for " + item.Name + " to level " + level + ", status: " + protectResult);
+                LogLine("PDE not enabled on the device, please enable before proceeding!!");
             }
         }
 
@@ -119,7 +128,7 @@ namespace PDETestApp
             var protectedBuffer = CryptographicBuffer.DecodeFromBase64String(protectbase64EncodedContent);
             try
             {
-                var result = await g_udpm.UnprotectBufferAsync(protectedBuffer);
+                var result = await dataProtectionManager.UnprotectBufferAsync(protectedBuffer);
                 if (result.Status == UserDataBufferUnprotectStatus.Succeeded)
                 {
                     String unprotectedText = CryptographicBuffer.ConvertBinaryToString(BinaryStringEncoding.Utf8, result.UnprotectedBuffer);
@@ -128,12 +137,17 @@ namespace PDETestApp
                     bufferOutputTextBox.Text = "";
                     bufferOutputTextBox.Text = unprotectedText;
 
-                    LogLine("Status of Unprotectng the buffer:" + result.Status);
+                    LogLine("Status of Unprotecting the buffer:" + result.Status);
                 }
                 else
                 {
                     LogLine("This protected buffer is currently unavailable for unprotection");
                 }
+            }
+            catch(NullReferenceException nrex)
+            {
+                LogLine("PDE not enabled on the device, please enable before proceeding!!");
+                LogLine(nrex.ToString());
             }
             catch(Exception ex) 
             {
@@ -145,23 +159,32 @@ namespace PDETestApp
         // Protect the buffer to the level of protection specified
         async void ProtectBuffer(String text, UserDataAvailability level)
         {
+            // Empty buffers cannot be protected, please ensure that text length is not zero.
             if (text.Length == 0)
             {
                 return;
             }
-            var buffer = CryptographicBuffer.ConvertStringToBinary(text, BinaryStringEncoding.Utf8);
-            var protectedContent = await g_udpm.ProtectBufferAsync(buffer, level);
-            String protectbase64EncodedContent = CryptographicBuffer.EncodeToBase64String(protectedContent);
-            bufferOutputTextBox.Text = protectbase64EncodedContent;
-            LogLine("Protected buffer: " + protectbase64EncodedContent);
+            try
+            {
+                var buffer = CryptographicBuffer.ConvertStringToBinary(text, BinaryStringEncoding.Utf8);
+                var protectedContent = await dataProtectionManager.ProtectBufferAsync(buffer, level);
+                String protectbase64EncodedContent = CryptographicBuffer.EncodeToBase64String(protectedContent);
+                bufferOutputTextBox.Text = protectbase64EncodedContent;
+                LogLine("Protected buffer: " + protectbase64EncodedContent);
+            }
+            catch (NullReferenceException nrex)
+            {
+                LogLine("PDE not enabled on the device, please enable before proceeding!!");
+                LogLine(nrex.ToString());
+            }
         }
 
         // Button click event handler to protect folder to L1 level of protection
         private async void FolderL1_Click(object sender, EventArgs e)
         {
-            if (g_selectedFolder.Length > 0)
+            if (selectedFolder.Length > 0)
             {
-                StorageFolder folder = await StorageFolder.GetFolderFromPathAsync(g_selectedFolder);
+                StorageFolder folder = await StorageFolder.GetFolderFromPathAsync(selectedFolder);
                 this.ProtectFolderRecursively(folder, UserDataAvailability.AfterFirstUnlock);
             }
         }
@@ -169,9 +192,9 @@ namespace PDETestApp
         // Button click event handler to protect folder to L2 level of protection
         private async void FolderL2_Click(object sender, EventArgs e)
         {
-            if (g_selectedFolder.Length > 0)
+            if (selectedFolder.Length > 0)
             {
-                StorageFolder folder = await StorageFolder.GetFolderFromPathAsync(g_selectedFolder);
+                StorageFolder folder = await StorageFolder.GetFolderFromPathAsync(selectedFolder);
                 this.ProtectFolderRecursively(folder, UserDataAvailability.WhileUnlocked);
             }
         }
@@ -179,9 +202,9 @@ namespace PDETestApp
         // Button click event handler to unprotect folder and its contents
         private async void FolderUnprotect_Click(object sender, EventArgs e)
         {
-            if (g_selectedFolder.Length > 0)
+            if (selectedFolder.Length > 0)
             {
-                StorageFolder folder = await StorageFolder.GetFolderFromPathAsync(g_selectedFolder);
+                StorageFolder folder = await StorageFolder.GetFolderFromPathAsync(selectedFolder);
                 this.ProtectFolderRecursively(folder, UserDataAvailability.Always);
             }
         }
@@ -189,9 +212,9 @@ namespace PDETestApp
         // Button click event handler to protect file to L1 level of protection
         private async void FileL1_Click(object sender, EventArgs e)
         {
-            if (g_selectedFile.Length > 0)
+            if (selectedFile.Length > 0)
             {
-                IStorageItem item = await StorageFile.GetFileFromPathAsync(g_selectedFile);
+                IStorageItem item = await StorageFile.GetFileFromPathAsync(selectedFile);
                 this.ProtectAndLog(item, UserDataAvailability.AfterFirstUnlock);
             }
         }
@@ -199,9 +222,9 @@ namespace PDETestApp
         // Button click event handler to protect file to L2 level of protection
         private async void FileL2_Click(object sender, EventArgs e)
         {
-            if (g_selectedFile.Length > 0)
+            if (selectedFile.Length > 0)
             {
-                IStorageItem item = await StorageFile.GetFileFromPathAsync(g_selectedFile);
+                IStorageItem item = await StorageFile.GetFileFromPathAsync(selectedFile);
                 this.ProtectAndLog(item, UserDataAvailability.WhileUnlocked);
             }
         }
@@ -209,9 +232,9 @@ namespace PDETestApp
         // Button click event handler to unprotect file
         private async void FileUnprotect_Click(object sender, EventArgs e)
         {
-            if (g_selectedFile.Length > 0)
+            if (selectedFile.Length > 0)
             {
-                IStorageItem item = await StorageFile.GetFileFromPathAsync(g_selectedFile);
+                IStorageItem item = await StorageFile.GetFileFromPathAsync(selectedFile);
                 this.ProtectAndLog(item, UserDataAvailability.Always);
             }
         }
@@ -243,7 +266,7 @@ namespace PDETestApp
             {
                 listViewSelectedFolder.Items.Clear();
                 listViewSelectedFolder.Items.Add(folderBrowserDialog.SelectedPath.Trim());
-                g_selectedFolder = folderBrowserDialog.SelectedPath;
+                selectedFolder = folderBrowserDialog.SelectedPath;
             }
         }
 
@@ -253,7 +276,7 @@ namespace PDETestApp
             {
                 listViewSelectedFile.Items.Clear();
                 listViewSelectedFile.Items.Add(fileBrowserDialog.FileName.Trim());
-                g_selectedFile = fileBrowserDialog.FileName;
+                selectedFile = fileBrowserDialog.FileName;
             }
         }
     }
